@@ -1,0 +1,8 @@
+{
+  "runtime": "typescript",
+  "platformVersion": 31,
+  "entry": "client/dist/index.html",
+  "name": "Sistem Kepegawaian Disperkimtan",
+  "slug": "sistem-kepegawaian-disperkimtan",
+  "managedCronJobs": []
+}
