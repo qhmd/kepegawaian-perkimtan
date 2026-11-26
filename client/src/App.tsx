@@ -532,7 +532,7 @@ function Dashboard({ data, tanggalAcuan }: { data: PegawaiTerhitung[]; tanggalAc
       </Kartu>
 
       <Kartu pita="Pensiun 12 Bulan ke Depan" className="mt-10">
-        <div className="overflow-x-auto">
+        <div className="table-wrap">
           {pensiunDekat.length === 0 ? (
             <SelKosong pesan="Tidak ada pegawai yang pensiun dalam 12 bulan ke depan." />
           ) : (
@@ -880,7 +880,7 @@ function HalamanPegawai({ data }: { data: Pegawai[] }) {
       <p className="mb-2 text-sm text-[var(--dim)]">
         Menampilkan {tersaring.length} dari {data.length} pegawai.
       </p>
-      <div className="overflow-x-auto kartu">
+      <div className="table-wrap kartu">
         {tersaring.length === 0 ? (
           <SelKosong pesan="Tidak ada pegawai yang cocok dengan pencarian." />
         ) : (
@@ -1028,7 +1028,7 @@ function HalamanPensiun({ data }: { data: PegawaiTerhitung[] }) {
       <p className="mb-2 text-sm text-[var(--dim)]">
         Menampilkan {urut.length} dari {data.length} pegawai.
       </p>
-      <div className="overflow-x-auto kartu">
+      <div className="table-wrap kartu">
         {urut.length === 0 ? (
           <SelKosong pesan={data.length === 0 ? "Belum ada data pegawai." : "Tidak ada data pensiun yang cocok dengan pencarian."} />
         ) : (
