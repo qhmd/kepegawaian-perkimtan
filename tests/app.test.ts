@@ -14,6 +14,7 @@ import {
 } from "../client/src/excelPegawai";
 import { Actions } from "../server/src/actions";
 import { getSessionUser, handleAuthRequest } from "../server/auth";
+import { wrapBunSqlite } from "../server/db";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -27,8 +28,9 @@ function createTestDb() {
     }
   }
   const db = drizzle(sqlite);
+  const sql = wrapBunSqlite(sqlite);
   const ctx = { db: () => db as any, invalidateQueries: () => {} };
-  return { sqlite, db, ctx };
+  return { sqlite, sql, db, ctx };
 }
 
 describe("Perhitungan Pensiun", () => {
@@ -217,7 +219,7 @@ describe("Actions CRUD & Import Pegawai", () => {
 
 describe("Autentikasi (Verifikasi Email, Register, Login, Session, Logout)", () => {
   it("mewajibkan kode verifikasi email saat buat akun dan mengelola sesi dengan benar", async () => {
-    const { sqlite } = createTestDb();
+    const { sql } = createTestDb();
     let capturedCode = "";
     const fakeMail = async (_to: string, _subject: string, body: string) => {
       const m = body.match(/Kode Verifikasi:\s*(\d{6})/);
@@ -230,7 +232,7 @@ describe("Autentikasi (Verifikasi Email, Register, Login, Session, Logout)", () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Admin Uji", email: "uji@disperkimtan.go.id", password: "password123" }),
     });
-    const noCodeRes = await handleAuthRequest(noCodeReq, new URL(noCodeReq.url), sqlite, fakeMail);
+    const noCodeRes = await handleAuthRequest(noCodeReq, new URL(noCodeReq.url), sql, fakeMail);
     expect(noCodeRes?.status).toBe(400);
 
     // 2. Minta kode verifikasi
@@ -239,7 +241,7 @@ describe("Autentikasi (Verifikasi Email, Register, Login, Session, Logout)", () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Admin Uji", email: "uji@disperkimtan.go.id", password: "password123" }),
     });
-    const reqCodeRes = await handleAuthRequest(reqCode, new URL(reqCode.url), sqlite, fakeMail);
+    const reqCodeRes = await handleAuthRequest(reqCode, new URL(reqCode.url), sql, fakeMail);
     expect(reqCodeRes?.status).toBe(200);
     expect(capturedCode).toMatch(/^\d{6}$/);
 
@@ -249,7 +251,7 @@ describe("Autentikasi (Verifikasi Email, Register, Login, Session, Logout)", () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Admin Uji", email: "uji@disperkimtan.go.id", password: "password123", code: "000000" }),
     });
-    const wrongCodeRes = await handleAuthRequest(wrongCodeReq, new URL(wrongCodeReq.url), sqlite, fakeMail);
+    const wrongCodeRes = await handleAuthRequest(wrongCodeReq, new URL(wrongCodeReq.url), sql, fakeMail);
     expect(wrongCodeRes?.status).toBe(400);
 
     // 4. Kode benar berhasil membuat akun + sesi
@@ -258,24 +260,24 @@ describe("Autentikasi (Verifikasi Email, Register, Login, Session, Logout)", () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Admin Uji", email: "uji@disperkimtan.go.id", password: "password123", code: capturedCode }),
     });
-    const regRes = await handleAuthRequest(regReq, new URL(regReq.url), sqlite, fakeMail);
+    const regRes = await handleAuthRequest(regReq, new URL(regReq.url), sql, fakeMail);
     expect(regRes?.status).toBe(201);
     const cookie = regRes?.headers.get("set-cookie")?.split(";")[0] ?? "";
     expect(cookie.startsWith("sid=")).toBe(true);
 
     const meReq = new Request("http://localhost:4173/auth/me", { headers: { cookie } });
-    expect(getSessionUser(meReq, sqlite)?.email).toBe("uji@disperkimtan.go.id");
+    expect((await getSessionUser(meReq, sql))?.email).toBe("uji@disperkimtan.go.id");
 
     const logoutReq = new Request("http://localhost:4173/auth/logout", { method: "POST", headers: { cookie } });
-    await handleAuthRequest(logoutReq, new URL(logoutReq.url), sqlite, fakeMail);
-    expect(getSessionUser(meReq, sqlite)).toBeNull();
+    await handleAuthRequest(logoutReq, new URL(logoutReq.url), sql, fakeMail);
+    expect(await getSessionUser(meReq, sql)).toBeNull();
 
     const loginReq = new Request("http://localhost:4173/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "uji@disperkimtan.go.id", password: "password123" }),
     });
-    const loginRes = await handleAuthRequest(loginReq, new URL(loginReq.url), sqlite, fakeMail);
+    const loginRes = await handleAuthRequest(loginReq, new URL(loginReq.url), sql, fakeMail);
     expect(loginRes?.status).toBe(200);
   });
 });

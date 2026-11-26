@@ -1,6 +1,6 @@
-import type { Database } from "bun:sqlite";
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import tls from "node:tls";
+import type { SqlClient } from "./db";
 
 export interface AuthUser {
   id: number;
@@ -16,6 +16,29 @@ const RESET_TTL_MS = 15 * 60 * 1000;
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString("hex");
+  const derived = scryptSync(password, salt, 64).toString("hex");
+  return `scrypt$${salt}$${derived}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  if (stored.startsWith("scrypt$")) {
+    const parts = stored.split("$");
+    const salt = parts[1];
+    const hashHex = parts[2];
+    if (!salt || !hashHex) return false;
+    const derived = scryptSync(password, salt, 64);
+    const expected = Buffer.from(hashHex, "hex");
+    if (derived.length !== expected.length) return false;
+    return timingSafeEqual(derived, expected);
+  }
+  if (typeof Bun !== "undefined" && Bun.password) {
+    return await Bun.password.verify(password, stored);
+  }
+  return false;
 }
 
 function parseCookies(req: Request): Record<string, string> {
@@ -57,55 +80,54 @@ function isSecureReq(req: Request): boolean {
   return url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 }
 
-function createSession(db: Database, userId: number): string {
+async function createSession(db: SqlClient, userId: number): Promise<string> {
   const sid = randomBytes(32).toString("hex");
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  db.query("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)").run(
+  await db.run("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)", [
     sid,
     userId,
     expiresAt,
-  );
+  ]);
   return sid;
 }
 
-export function getSessionUser(req: Request, db: Database): AuthUser | null {
+export async function getSessionUser(req: Request, db: SqlClient): Promise<AuthUser | null> {
   const cookies = parseCookies(req);
   const sid = cookies[SESSION_COOKIE];
   if (!sid) return null;
 
-  const row = db
-    .query(
-      `SELECT u.id, u.email, u.name, u.role, u.google_id, s.expires_at
-       FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ?`,
-    )
-    .get(sid) as {
+  const row = await db.get<{
     id: number;
     email: string;
     name: string;
     role: string;
     google_id: string | null;
     expires_at: number;
-  } | null;
+  }>(
+    `SELECT u.id, u.email, u.name, u.role, u.google_id, s.expires_at
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.id = ?`,
+    [sid],
+  );
 
   if (!row) return null;
-  if (row.expires_at < Date.now()) {
-    db.query("DELETE FROM sessions WHERE id = ?").run(sid);
+  if (Number(row.expires_at) < Date.now()) {
+    await db.run("DELETE FROM sessions WHERE id = ?", [sid]);
     return null;
   }
   return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    role: row.role,
+    id: Number(row.id),
+    email: String(row.email),
+    name: String(row.name),
+    role: String(row.role),
     hasGoogle: Boolean(row.google_id),
   };
 }
 
-function countUsers(db: Database): number {
-  const row = db.query("SELECT COUNT(*) AS n FROM users").get() as { n: number };
-  return row.n;
+async function countUsers(db: SqlClient): Promise<number> {
+  const row = await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM users");
+  return Number(row?.n ?? 0);
 }
 
 function isEmailResetEnabled(): boolean {
@@ -197,16 +219,16 @@ export type MailSender = (to: string, subject: string, body: string) => Promise<
 export async function handleAuthRequest(
   req: Request,
   url: URL,
-  db: Database,
+  db: SqlClient,
   mailSender: MailSender = sendSmtpMail,
 ): Promise<Response | null> {
   const secure = isSecureReq(req);
 
   if (url.pathname === "/auth/me" && req.method === "GET") {
-    const user = getSessionUser(req, db);
+    const user = await getSessionUser(req, db);
     return Response.json({
       user,
-      hasUsers: countUsers(db) > 0,
+      hasUsers: (await countUsers(db)) > 0,
       emailResetEnabled: isEmailResetEnabled(),
     });
   }
@@ -232,7 +254,7 @@ export async function handleAuthRequest(
       return Response.json({ error: "Kata sandi minimal 6 karakter." }, { status: 400 });
     }
 
-    const existing = db.query("SELECT id FROM users WHERE email = ?").get(email);
+    const existing = await db.get("SELECT id FROM users WHERE email = ?", [email]);
     if (existing) {
       return Response.json(
         { error: "Email ini sudah terdaftar. Silakan masuk atau gunakan Lupa Kata Sandi." },
@@ -242,11 +264,10 @@ export async function handleAuthRequest(
 
     const code = String(randomInt(100000, 1000000));
     const expiresAt = Date.now() + RESET_TTL_MS;
-    db.query("UPDATE email_verifications SET used = 1 WHERE email = ? AND used = 0").run(email);
-    db.query("INSERT INTO email_verifications (email, code_hash, expires_at, used) VALUES (?, ?, ?, 0)").run(
-      email,
-      sha256(code),
-      expiresAt,
+    await db.run("UPDATE email_verifications SET used = 1 WHERE email = ? AND used = 0", [email]);
+    await db.run(
+      "INSERT INTO email_verifications (email, code_hash, expires_at, used) VALUES (?, ?, ?, 0)",
+      [email, sha256(code), expiresAt],
     );
 
     if (isEmailResetEnabled()) {
@@ -311,7 +332,7 @@ export async function handleAuthRequest(
       return Response.json({ error: "Kode verifikasi harus 6 digit angka." }, { status: 400 });
     }
 
-    const existing = db.query("SELECT id FROM users WHERE email = ?").get(email);
+    const existing = await db.get("SELECT id FROM users WHERE email = ?", [email]);
     if (existing) {
       return Response.json(
         { error: "Email ini sudah terdaftar. Silakan masuk atau gunakan Lupa Kata Sandi." },
@@ -319,33 +340,36 @@ export async function handleAuthRequest(
       );
     }
 
-    const verif = db
-      .query(
-        `SELECT id, code_hash, expires_at, used
-         FROM email_verifications
-         WHERE email = ? AND used = 0
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(email) as { id: number; code_hash: string; expires_at: number; used: number } | null;
+    const verif = await db.get<{
+      id: number;
+      code_hash: string;
+      expires_at: number;
+      used: number;
+    }>(
+      `SELECT id, code_hash, expires_at, used
+       FROM email_verifications
+       WHERE email = ? AND used = 0
+       ORDER BY id DESC LIMIT 1`,
+      [email],
+    );
 
-    if (!verif || verif.expires_at < Date.now() || verif.code_hash !== sha256(code)) {
+    if (!verif || Number(verif.expires_at) < Date.now() || verif.code_hash !== sha256(code)) {
       return Response.json({ error: "Kode verifikasi salah atau sudah kedaluwarsa." }, { status: 400 });
     }
 
-    db.query("UPDATE email_verifications SET used = 1 WHERE id = ?").run(verif.id);
+    await db.run("UPDATE email_verifications SET used = 1 WHERE id = ?", [verif.id]);
 
-    const role = countUsers(db) === 0 ? "Admin Kepegawaian" : "Operator";
-    const passwordHash = await Bun.password.hash(password);
+    const role = (await countUsers(db)) === 0 ? "Admin Kepegawaian" : "Operator";
+    const passwordHash = hashPassword(password);
     const createdAt = new Date().toISOString();
 
-    const info = db
-      .query(
-        "INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(email, name, passwordHash, role, createdAt);
+    const info = await db.run(
+      "INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+      [email, name, passwordHash, role, createdAt],
+    );
 
     const userId = Number(info.lastInsertRowid);
-    const sid = createSession(db, userId);
+    const sid = await createSession(db, userId);
 
     return Response.json(
       { user: { id: userId, email, name, role, hasGoogle: false } },
@@ -372,40 +396,35 @@ export async function handleAuthRequest(
       return Response.json({ error: "Email dan kata sandi wajib diisi." }, { status: 400 });
     }
 
-    const row = db
-      .query("SELECT id, email, name, password_hash, google_id, role FROM users WHERE email = ?")
-      .get(email) as {
+    const row = await db.get<{
       id: number;
       email: string;
       name: string;
       password_hash: string | null;
       google_id: string | null;
       role: string;
-    } | null;
+    }>("SELECT id, email, name, password_hash, google_id, role FROM users WHERE email = ?", [email]);
 
     if (!row) {
       return Response.json({ error: "Email atau kata sandi salah." }, { status: 401 });
     }
     if (!row.password_hash) {
       return Response.json(
-        {
-          error:
-            "Akun ini terdaftar lewat Google. Klik Masuk dengan Google atau buat kata sandi lewat Lupa Kata Sandi.",
-        },
+        { error: "Akun ini belum memiliki kata sandi. Gunakan Lupa Sandi untuk membuat kata sandi." },
         { status: 401 },
       );
     }
 
-    const valid = await Bun.password.verify(password, row.password_hash);
+    const valid = await verifyPassword(password, row.password_hash);
     if (!valid) {
       return Response.json({ error: "Email atau kata sandi salah." }, { status: 401 });
     }
 
-    const sid = createSession(db, row.id);
+    const sid = await createSession(db, Number(row.id));
     return Response.json(
       {
         user: {
-          id: row.id,
+          id: Number(row.id),
           email: row.email,
           name: row.name,
           role: row.role,
@@ -424,7 +443,7 @@ export async function handleAuthRequest(
     const cookies = parseCookies(req);
     const sid = cookies[SESSION_COOKIE];
     if (sid) {
-      db.query("DELETE FROM sessions WHERE id = ?").run(sid);
+      await db.run("DELETE FROM sessions WHERE id = ?", [sid]);
     }
     return Response.json(
       { ok: true },
@@ -448,9 +467,10 @@ export async function handleAuthRequest(
       return Response.json({ error: "Masukkan alamat email yang valid." }, { status: 400 });
     }
 
-    const row = db
-      .query("SELECT id, email, name FROM users WHERE email = ?")
-      .get(email) as { id: number; email: string; name: string } | null;
+    const row = await db.get<{ id: number; email: string; name: string }>(
+      "SELECT id, email, name FROM users WHERE email = ?",
+      [email],
+    );
 
     if (!row) {
       return Response.json(
@@ -461,16 +481,15 @@ export async function handleAuthRequest(
 
     const code = String(randomInt(100000, 999999));
     const expiresAt = Date.now() + RESET_TTL_MS;
-    db.query("UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0").run(row.id);
-    db.query("INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES (?, ?, ?)").run(
-      row.id,
-      sha256(code),
-      expiresAt,
+    await db.run("UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0", [row.id]);
+    await db.run(
+      "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES (?, ?, ?)",
+      [row.id, sha256(code), expiresAt],
     );
 
     if (isEmailResetEnabled()) {
       try {
-        await sendSmtpMail(
+        await mailSender(
           row.email,
           "Kode Reset Kata Sandi - Sistem Kepegawaian Disperkimtan",
           `Halo ${row.name},\n\nKode reset kata sandi Anda adalah: ${code}\nKode ini berlaku selama 15 menit.\n\nJika Anda tidak meminta reset kata sandi, abaikan email ini.`,
@@ -514,41 +533,38 @@ export async function handleAuthRequest(
       return Response.json({ error: "Kata sandi baru minimal 6 karakter." }, { status: 400 });
     }
 
-    const user = db
-      .query("SELECT id, email, name, google_id, role FROM users WHERE email = ?")
-      .get(email) as {
+    const user = await db.get<{
       id: number;
       email: string;
       name: string;
       google_id: string | null;
       role: string;
-    } | null;
+    }>("SELECT id, email, name, google_id, role FROM users WHERE email = ?", [email]);
 
     if (!user) {
       return Response.json({ error: "Kode reset tidak valid atau sudah kedaluwarsa." }, { status: 400 });
     }
 
-    const reset = db
-      .query(
-        `SELECT id, expires_at FROM password_resets
-         WHERE user_id = ? AND code_hash = ? AND used = 0
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(user.id, sha256(code)) as { id: number; expires_at: number } | null;
+    const reset = await db.get<{ id: number; expires_at: number }>(
+      `SELECT id, expires_at FROM password_resets
+       WHERE user_id = ? AND code_hash = ? AND used = 0
+       ORDER BY id DESC LIMIT 1`,
+      [user.id, sha256(code)],
+    );
 
-    if (!reset || reset.expires_at < Date.now()) {
+    if (!reset || Number(reset.expires_at) < Date.now()) {
       return Response.json({ error: "Kode reset tidak valid atau sudah kedaluwarsa." }, { status: 400 });
     }
 
-    const passwordHash = await Bun.password.hash(newPassword);
-    db.query("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, user.id);
-    db.query("UPDATE password_resets SET used = 1 WHERE id = ?").run(reset.id);
+    const passwordHash = hashPassword(newPassword);
+    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+    await db.run("UPDATE password_resets SET used = 1 WHERE id = ?", [reset.id]);
 
-    const sid = createSession(db, user.id);
+    const sid = await createSession(db, Number(user.id));
     return Response.json(
       {
         user: {
-          id: user.id,
+          id: Number(user.id),
           email: user.email,
           name: user.name,
           role: user.role,

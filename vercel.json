@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "bun run build",
+  "outputDirectory": "client/dist",
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "{drizzle/**,seed-data-asn.json}"
+    }
+  },
+  "rewrites": [
+    { "source": "/auth/(.*)", "destination": "/api/index" },
+    { "source": "/actions", "destination": "/api/index" },
+    {
+      "source": "/((?!api/|auth/|actions|assets/|logo-sulsel\\.png|favicon\\.ico).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
