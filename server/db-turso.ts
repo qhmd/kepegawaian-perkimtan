@@ -1,5 +1,5 @@
-import { createClient, type Client, type InValue } from "@libsql/client";
-import { drizzle as drizzleLibsql } from "drizzle-orm/libsql";
+import { createClient, type Client, type InValue } from "@libsql/client/web";
+import { drizzle as drizzleLibsql } from "drizzle-orm/libsql/web";
 import { ensureSchemaAndSeed, type RuntimeDb, type SqlClient } from "./db-core";
 
 export function wrapLibsql(client: Client): SqlClient {
