@@ -950,6 +950,7 @@ function HalamanPensiun({ data }: { data: PegawaiTerhitung[] }) {
     | "tmtPensiun"
     | "masaKerja";
 
+  const [cari, setCari] = useState("");
   const [sortKey, setSortKey] = useState<PensiunSortKey>("tmtPensiun");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -959,7 +960,17 @@ function HalamanPensiun({ data }: { data: PegawaiTerhitung[] }) {
   }
 
   const urut = useMemo(() => {
-    return [...data].sort((a, b) => {
+    const q = cari.trim().toLowerCase();
+    const list = q
+      ? data.filter(
+          (p) =>
+            p.nama.toLowerCase().includes(q) ||
+            p.nip.toLowerCase().includes(q) ||
+            p.jabatan.toLowerCase().includes(q) ||
+            String(p.pensiun.tahunPensiun).includes(q),
+        )
+      : data;
+    return [...list].sort((a, b) => {
       switch (sortKey) {
         case "no": return bandingNilai(a.id, b.id, sortDir);
         case "nama": return bandingNilai(a.nama, b.nama, sortDir);
@@ -977,19 +988,23 @@ function HalamanPensiun({ data }: { data: PegawaiTerhitung[] }) {
           return bandingNilai(a.pensiun.tmtPensiun, b.pensiun.tmtPensiun, sortDir);
       }
     });
-  }, [data, sortKey, sortDir]);
+  }, [data, cari, sortKey, sortDir]);
 
   return (
     <div>
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="font-display text-2xl font-bold tracking-tight text-[var(--text)]">
-            Daftar Pensiun
-          </h2>
-          <p className="mt-1 text-sm text-[var(--dim)]">
-            Klik judul kolom untuk mengurutkan. TMT Pensiun = tanggal 1 bulan berikutnya setelah pegawai genap mencapai Batas Usia Pensiun (BUP).
-          </p>
-        </div>
+      <JudulHalaman
+        judul="Daftar Pensiun"
+        sub="Klik judul kolom untuk mengurutkan. TMT Pensiun = tanggal 1 bulan berikutnya setelah pegawai genap mencapai Batas Usia Pensiun (BUP)."
+      />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          type="search"
+          aria-label="Cari nama, NIP, jabatan, atau tahun pensiun"
+          placeholder="Cari nama, NIP, jabatan, atau tahun pensiun…"
+          className="min-w-56 flex-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text)]"
+          value={cari}
+          onChange={(e) => setCari(e.target.value)}
+        />
         <button
           type="button"
           disabled={urut.length === 0}
@@ -1010,9 +1025,12 @@ function HalamanPensiun({ data }: { data: PegawaiTerhitung[] }) {
           Export Excel
         </button>
       </div>
+      <p className="mb-2 text-sm text-[var(--dim)]">
+        Menampilkan {urut.length} dari {data.length} pegawai.
+      </p>
       <div className="overflow-x-auto kartu">
         {urut.length === 0 ? (
-          <SelKosong pesan="Belum ada data pegawai." />
+          <SelKosong pesan={data.length === 0 ? "Belum ada data pegawai." : "Tidak ada data pensiun yang cocok dengan pencarian."} />
         ) : (
           <table className="data-table">
             <thead>
