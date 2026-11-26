@@ -681,7 +681,6 @@ export function AuthScreen({
         {/* Footer panel kanan */}
         <footer className="mx-auto flex w-full max-w-md items-center justify-between border-t border-[#d4dce6] pt-3 text-xs text-[#5b6b80]">
           <span>Subbagian Umum & Kepegawaian</span>
-          <span>Server Lokal</span>
         </footer>
       </main>
     </div>
